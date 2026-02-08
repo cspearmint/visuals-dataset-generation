@@ -362,7 +362,7 @@ def main():
     )
 
     print(f"[success] Wrote {len(paths)} files under {args.output_dir}")
-    print(f"  - Augmented images in: rain/, fog/, snow/, motion_blur/")
+    print(f"  - Augmented images in: rain/, fog/, snow/, frost/, sunglare/")
     print(f"  - Metadata JSON in: metadata/")
 
 
