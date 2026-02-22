@@ -20,8 +20,9 @@ if (-not $imageExists) {
 }
 
 # Build docker run command
-# Mount the parent directory (repo root) so both visuals_dataset and HiKER-SGG_Alterations are accessible
-$repoRoot = Split-Path -Parent $PWD
+# Mount the repo root so both visuals_dataset and HiKER-SGG_Alterations are accessible
+$scriptDir = $PSScriptRoot
+$repoRoot = Split-Path -Parent $scriptDir
 $dockerCmd = @(
     "run",
     "--rm",
@@ -43,7 +44,7 @@ if (Test-Path $gcloudPath) {
 # Add image and Python command
 $dockerCmd += $IMAGE
 $dockerCmd += "python"
-$dockerCmd += "load_waymo_images.py"
+$dockerCmd += "generate_dataset.py"
 $dockerCmd += $Args
 
 Write-Host "[info] Running: docker $($dockerCmd -join ' ')"

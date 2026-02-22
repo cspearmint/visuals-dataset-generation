@@ -281,10 +281,24 @@ def frost(x, severity=1):
     width, height = x.size
     root_path = _get_asset_root() + os.sep
     frost = cv2.imread(root_path + 'frost' + os.sep + 'frostlarge.jpg')
-    # randomly crop and convert to rgb
-    frost = frost[:height, :width][..., [2, 1, 0]]
+    if frost is None:
+        raise FileNotFoundError("frost texture not found")
 
-    return np.clip(c[0] * np.array(x) + c[1] * frost, 0, 255)
+    frost_h, frost_w = frost.shape[:2]
+    if frost_h >= height and frost_w >= width:
+        # Crop a random window when the texture is big enough.
+        top = np.random.randint(0, frost_h - height + 1) if frost_h > height else 0
+        left = np.random.randint(0, frost_w - width + 1) if frost_w > width else 0
+        frost = frost[top:top + height, left:left + width]
+    else:
+        # Upscale smaller textures to avoid shape mismatch on high-res frames.
+        frost = cv2.resize(frost, (width, height), interpolation=cv2.INTER_CUBIC)
+
+    # Convert BGR -> RGB and blend. Keep frost overlay at 50% of original strength.
+    frost = frost[..., [2, 1, 0]].astype(np.float32)
+    x_arr = np.array(x, dtype=np.float32)
+    frost_weight = 0.5 * c[1]
+    return np.clip(c[0] * x_arr + frost_weight * frost, 0, 255)
 
 
 def snow(x, severity=1):

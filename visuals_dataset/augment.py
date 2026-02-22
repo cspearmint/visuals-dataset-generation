@@ -26,7 +26,8 @@ def encode_image(image: PILImage.Image, format: str = "JPEG", quality: int = 90)
 class ImageAugmenter:
     """
     Image augmenter that delegates to HiKER-SGG_Alterations/corruptions.py.
-    Applies: snow, frost, fog, rain, sunglare.
+    Applies: snow, frost, fog, rain, sunglare, brightness,
+    wildfire_smoke, dust, waterdrop.
     """
     
     def __init__(self, seed: Optional[int] = None):
@@ -54,7 +55,7 @@ class ImageAugmenter:
     
     def apply_all(self, image: PILImage.Image) -> Dict[str, PILImage.Image]:
         """
-        Apply snow, frost, fog, rain, and sunglare corruptions.
+        Apply all configured corruptions from HiKER.
         Returns dict mapping corruption name -> PIL Image.
         Skips corruptions that fail (e.g., waterdrop on Windows).
         """
@@ -67,6 +68,10 @@ class ImageAugmenter:
             ('fog', 3),
             ('rain', 3),
             ('sunglare', 3),
+            ('brightness', 3),
+            ('wildfire_smoke', 3),
+            ('dust', 3),
+            ('waterdrop', 3),
         ]
         
         for corruption_name, severity in corruptions_to_apply:

@@ -1,0 +1,13 @@
+# Local cached Waymo subset and derived data
+/dataset/
+
+# Generated outputs
+/visuals_dataset/output/
+/visuals_dataset/output_schema_check/
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+
+# OS/editor noise
+.DS_Store

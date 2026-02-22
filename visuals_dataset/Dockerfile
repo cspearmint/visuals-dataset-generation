@@ -8,7 +8,7 @@
 #     -v "$HOME/.config/gcloud":/root/.config/gcloud \
 #     -e GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json \
 #     hiker-augment \
-#     python load_waymo_images.py --count 10 --max-files 3 --output-dir output
+#     python generate_dataset.py --count 10 --max-files 3 --output-dir output
 
 FROM tensorflow/tensorflow:2.11.0
 
