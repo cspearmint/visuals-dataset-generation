@@ -7,6 +7,7 @@ from io import BytesIO
 from typing import Dict, Optional
 from pathlib import Path
 import importlib.util
+import random
 
 from PIL import Image as PILImage
 
@@ -32,6 +33,7 @@ class ImageAugmenter:
     
     def __init__(self, seed: Optional[int] = None):
         self.seed = seed
+        self.rng = random.Random(seed)
         self.corruptions_mod = self._load_corruptions_module()
     
     def _load_corruptions_module(self):
@@ -80,13 +82,16 @@ class ImageAugmenter:
                 if fn is None:
                     print(f"[warn] Corruption '{corruption_name}' not found in HiKER module")
                     continue
+                intensity = self.rng.uniform(0.2, 0.8)
                 
                 # Call the corruption function
                 try:
-                    corrupted = fn(image, severity=severity)
+                    corrupted = fn(image, severity=severity, intensity=intensity)
                 except TypeError:
-                    # Some functions may not accept severity parameter
-                    corrupted = fn(image)
+                    try:
+                        corrupted = fn(image, severity=severity)
+                    except TypeError:
+                        corrupted = fn(image)
                 
                 # Ensure result is a PIL Image
                 if not isinstance(corrupted, PILImage.Image):
