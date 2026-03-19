@@ -161,15 +161,21 @@ def apply_degradations_and_save(
         )
     )
 
-    meta_dir = out_dir / "metadata"
-    scene_meta_dir = meta_dir / "scene_metadata"
-    image_meta_dir = meta_dir / "image_metadata"
-    scene_meta_dir.mkdir(parents=True, exist_ok=True)
-    image_meta_dir.mkdir(parents=True, exist_ok=True)
+    current_segment: Optional[str] = None
+    scene_meta_dir: Path = out_dir  # placeholder, set per segment
+    image_meta_dir: Path = out_dir  # placeholder, set per segment
 
     for idx, record in indexed_images:
         segment = str(record.get("segment_context_name", "unknown"))
         timestamp = int(record.get("timestamp_micros", 0))
+
+        if segment != current_segment:
+            segment_dir = out_dir / ("segment_" + segment)
+            scene_meta_dir = segment_dir / "metadata" / "scene_metadata"
+            image_meta_dir = segment_dir / "metadata" / "image_metadata"
+            scene_meta_dir.mkdir(parents=True, exist_ok=True)
+            image_meta_dir.mkdir(parents=True, exist_ok=True)
+            current_segment = segment
         camera_name = str(record.get("camera_name", "unknown"))
         frame_key = build_frame_key(segment, timestamp)
         scene_name = build_scene_name(segment, timestamp)
@@ -211,7 +217,7 @@ def apply_degradations_and_save(
             print("[debug] Reusing metadata components for frame %s" % frame_key)
 
         try:
-            clear_dir = out_dir / "clear"
+            clear_dir = segment_dir / "clear"
             clear_dir.mkdir(parents=True, exist_ok=True)
             clear_path = clear_dir / ("%s.%s" % (base_name, image_format.lower()))
             clear_path.write_bytes(encode_image(pil_img, format=image_format))
@@ -263,7 +269,7 @@ def apply_degradations_and_save(
 
         aug_map = augmenter.apply_all(pil_img)
         for aug_name, aug_img in aug_map.items():
-            dest_dir = out_dir / aug_name
+            dest_dir = segment_dir / aug_name
             dest_dir.mkdir(parents=True, exist_ok=True)
             img_path = dest_dir / ("%s.%s" % (base_name, image_format.lower()))
             img_path.write_bytes(encode_image(aug_img, format=image_format))
