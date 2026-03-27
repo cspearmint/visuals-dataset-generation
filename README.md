@@ -1,4 +1,6 @@
 # visuals-dataset-generation
+Outdated, TODO: update soon.
+
 
 Dataset generation pipeline for Waymo Open Dataset camera images with HiKER-SGG image alterations and compact metadata export.
 

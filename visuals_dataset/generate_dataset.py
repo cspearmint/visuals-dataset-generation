@@ -129,6 +129,52 @@ def _compact_mapping(payload: Dict[str, Any]) -> Dict[str, Any]:
     return compact
 
 
+def _write_track_instances(
+    objects: List[Dict[str, Any]],
+    camera_name: str,
+    timestamp_micros: int,
+    segment_tracks: Dict[str, List[Dict[str, Any]]],
+    tracks_dir: Path,
+    written: List[Path],
+) -> None:
+    """For each matched object, append the instance to its track and write the file immediately."""
+    for obj in objects:
+        assoc = obj.get("lidar_association")
+        if not isinstance(assoc, dict) or assoc.get("status") != "matched":
+            continue
+        laser_ids = assoc.get("laser_object_ids", [])
+        lidar_boxes = assoc.get("lidar_boxes", [])
+        projected_boxes = assoc.get("projected_lidar_boxes", [])
+        for laser_object_id in laser_ids:
+            if not laser_object_id:
+                continue
+            lidar_box = next(
+                (b for b in lidar_boxes if b.get("key.laser_object_id") == laser_object_id),
+                None,
+            )
+            projected_box = next(
+                (b for b in projected_boxes if b.get("key.laser_object_id") == laser_object_id),
+                None,
+            )
+            track_key = "%s-%s" % (laser_object_id, camera_name)
+            instance = {
+                "timestamp_micros": timestamp_micros,
+                "camera_object_id": obj.get("camera_object_id"),
+                "type": obj.get("type"),
+                "box_2d": obj.get("box_2d"),
+                "derived_match_iou": assoc.get("derived_match_iou"),
+                "lidar_box": lidar_box,
+                "projected_lidar_box": projected_box,
+            }
+            segment_tracks.setdefault(track_key, []).append(instance)
+            tracks_dir.mkdir(parents=True, exist_ok=True)
+            track_path = tracks_dir / ("%s.json" % track_key)
+            with open(track_path, "w", encoding="utf-8") as f:
+                json.dump(segment_tracks[track_key], f, indent=2)
+            if track_path not in written:
+                written.append(track_path)
+
+
 def apply_degradations_and_save(
     images: List[Dict[str, Any]],
     output_dir: str,
@@ -139,8 +185,10 @@ def apply_degradations_and_save(
 ) -> List[Path]:
     """
     Apply augmentations, save clear + augmented images, and write metadata:
-      - metadata/scene_metadata: one file per frame (scene/timestamp)
-      - metadata/image_metadata: one file per camera image
+      - images/clear/ and images/<augmentation>/: clear + augmented images
+      - metadata/scene_metadata/: one file per frame (scene/timestamp)
+      - metadata/image_metadata/: one file per camera image
+      - metadata/tracks/: one file per unique (laser_object_id, camera_name) pair
     """
     out_dir = Path(output_dir)
     written: List[Path] = []
@@ -164,15 +212,20 @@ def apply_degradations_and_save(
     current_segment: Optional[str] = None
     scene_meta_dir: Path = out_dir  # placeholder, set per segment
     image_meta_dir: Path = out_dir  # placeholder, set per segment
+    segment_tracks: Dict[str, List[Dict[str, Any]]] = {}
+    tracks_dir: Path = out_dir  # placeholder, set per segment
 
     for idx, record in indexed_images:
         segment = str(record.get("segment_context_name", "unknown"))
         timestamp = int(record.get("timestamp_micros", 0))
 
         if segment != current_segment:
+            if current_segment is not None:
+                segment_tracks = {}
             segment_dir = out_dir / ("segment_" + segment)
             scene_meta_dir = segment_dir / "metadata" / "scene_metadata"
             image_meta_dir = segment_dir / "metadata" / "image_metadata"
+            tracks_dir = segment_dir / "metadata" / "tracks"
             scene_meta_dir.mkdir(parents=True, exist_ok=True)
             image_meta_dir.mkdir(parents=True, exist_ok=True)
             current_segment = segment
@@ -217,7 +270,7 @@ def apply_degradations_and_save(
             print("[debug] Reusing metadata components for frame %s" % frame_key)
 
         try:
-            clear_dir = segment_dir / "clear"
+            clear_dir = segment_dir / "images" / "clear"
             clear_dir.mkdir(parents=True, exist_ok=True)
             clear_path = clear_dir / ("%s.%s" % (base_name, image_format.lower()))
             clear_path.write_bytes(encode_image(pil_img, format=image_format))
@@ -267,9 +320,19 @@ def apply_degradations_and_save(
         except Exception as exc:
             print("[warn] Failed to save clear image/metadata for %s: %s" % (base_name, exc))
 
+        # Accumulate object tracks for matched lidar associations
+        enriched_objects = _json_safe(
+            current_camera_objects_with_lidar_by_camera.get(camera_name, [])
+        )
+        if isinstance(enriched_objects, list):
+            _write_track_instances(
+                enriched_objects, camera_name, timestamp,
+                segment_tracks, tracks_dir, written,
+            )
+
         aug_map = augmenter.apply_all(pil_img)
         for aug_name, aug_img in aug_map.items():
-            dest_dir = segment_dir / aug_name
+            dest_dir = segment_dir / "images" / aug_name
             dest_dir.mkdir(parents=True, exist_ok=True)
             img_path = dest_dir / ("%s.%s" % (base_name, image_format.lower()))
             img_path.write_bytes(encode_image(aug_img, format=image_format))
@@ -378,10 +441,11 @@ def main() -> None:
 
     print("[success] Wrote %d files under %s" % (len(paths), args.output_dir))
     print(
-        "  - Augmented images in: rain/, fog/, snow/, frost/, sunglare/, "
-        "brightness/, wildfire_smoke/, dust/, waterdrop/"
+        "  - Images in: images/clear/, images/rain/, images/fog/, images/snow/, "
+        "images/frost/, images/sunglare/, images/brightness/, "
+        "images/wildfire_smoke/, images/dust/, images/waterdrop/"
     )
-    print("  - Metadata JSON in: metadata/image_metadata/ and metadata/scene_metadata/")
+    print("  - Metadata in: metadata/scene_metadata/, metadata/image_metadata/, metadata/tracks/")
 
 
 if __name__ == "__main__":
