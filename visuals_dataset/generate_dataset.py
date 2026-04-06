@@ -211,9 +211,7 @@ def apply_degradations_and_save(
 
     current_segment: Optional[str] = None
     scene_meta_dir: Path = out_dir  # placeholder, set per segment
-    image_meta_dir: Path = out_dir  # placeholder, set per segment
     segment_tracks: Dict[str, List[Dict[str, Any]]] = {}
-    tracks_dir: Path = out_dir  # placeholder, set per segment
 
     for idx, record in indexed_images:
         segment = str(record.get("segment_context_name", "unknown"))
@@ -224,10 +222,7 @@ def apply_degradations_and_save(
                 segment_tracks = {}
             segment_dir = out_dir / ("segment_" + segment)
             scene_meta_dir = segment_dir / "metadata" / "scene_metadata"
-            image_meta_dir = segment_dir / "metadata" / "image_metadata"
-            tracks_dir = segment_dir / "metadata" / "tracks"
             scene_meta_dir.mkdir(parents=True, exist_ok=True)
-            image_meta_dir.mkdir(parents=True, exist_ok=True)
             current_segment = segment
         camera_name = str(record.get("camera_name", "unknown"))
         frame_key = build_frame_key(segment, timestamp)
@@ -238,6 +233,11 @@ def apply_degradations_and_save(
             pil_img = decode_image(record["image_bytes"])
         except Exception as exc:
             print("[warn] Failed to decode image %s: %s" % (base_name, exc))
+            continue
+
+        if pil_img.size != (1920, 1280):
+            if verbose:
+                print("[skip] Ignoring %s — size %dx%d is not 1920x1280" % (base_name, pil_img.size[0], pil_img.size[1]))
             continue
 
         if frame_key != current_frame_key:
@@ -269,8 +269,9 @@ def apply_degradations_and_save(
         elif verbose:
             print("[debug] Reusing metadata components for frame %s" % frame_key)
 
+        camera_subdir = "camera_%s" % camera_name
         try:
-            clear_dir = segment_dir / "images" / "clear"
+            clear_dir = segment_dir / "images" / camera_subdir / "clear"
             clear_dir.mkdir(parents=True, exist_ok=True)
             clear_path = clear_dir / ("%s.%s" % (base_name, image_format.lower()))
             clear_path.write_bytes(encode_image(pil_img, format=image_format))
@@ -291,7 +292,8 @@ def apply_degradations_and_save(
                 written.append(scene_meta_path)
                 scene_written_keys.add(frame_key)
 
-            image_meta_path = image_meta_dir / ("%s.json" % base_name)
+            image_meta_path = segment_dir / "metadata" / "image_metadata" / camera_subdir / ("%s.json" % base_name)
+            image_meta_path.parent.mkdir(parents=True, exist_ok=True)
             image_metadata = {
                 "generated_at_utc": datetime.utcnow().isoformat() + "Z",
                 "dataset_version": DATASET_BUCKET_NAME,
@@ -325,6 +327,7 @@ def apply_degradations_and_save(
             current_camera_objects_with_lidar_by_camera.get(camera_name, [])
         )
         if isinstance(enriched_objects, list):
+            tracks_dir = segment_dir / "metadata" / "tracks" / camera_subdir
             _write_track_instances(
                 enriched_objects, camera_name, timestamp,
                 segment_tracks, tracks_dir, written,
@@ -332,7 +335,7 @@ def apply_degradations_and_save(
 
         aug_map = augmenter.apply_all(pil_img)
         for aug_name, aug_img in aug_map.items():
-            dest_dir = segment_dir / "images" / aug_name
+            dest_dir = segment_dir / "images" / camera_subdir / aug_name
             dest_dir.mkdir(parents=True, exist_ok=True)
             img_path = dest_dir / ("%s.%s" % (base_name, image_format.lower()))
             img_path.write_bytes(encode_image(aug_img, format=image_format))

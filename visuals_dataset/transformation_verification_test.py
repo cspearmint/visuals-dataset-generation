@@ -82,7 +82,7 @@ def main() -> None:
     print("[info] Using segment: %s" % segment_dir.name)
 
     image_meta_dir = segment_dir / "metadata" / "image_metadata"
-    clear_dir = segment_dir / "clear"
+    clear_dir = segment_dir / "images" / "clear"
 
     if not image_meta_dir.exists():
         print("[error] Image metadata folder not found: %s" % image_meta_dir)
