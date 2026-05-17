@@ -35,11 +35,14 @@ def run_epoch(model, loader, criterion, optimizer, scaler, device, train: bool, 
     n_batches = len(loader)
 
     with torch.set_grad_enabled(train):
-        for batch_idx, (image, coords, target) in enumerate(loader):
-            image, coords, target = image.to(device), coords.to(device), target.to(device)
+        for batch_idx, (image, crop, coords, target) in enumerate(loader):
+            image = image.to(device)
+            crop = crop.to(device)
+            coords = coords.to(device)
+            target = target.to(device)
 
             with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
-                pred = model(image, coords)
+                pred = model(image, crop, coords)
                 loss = criterion(pred, target)
 
             if train:

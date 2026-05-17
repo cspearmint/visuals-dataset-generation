@@ -4,13 +4,21 @@
 
 ## Architecture
 
-ResNet18 image encoder fused with an 8-float coordinate vector → MLP head → (x, y, z).
+Two-stream ResNet18: one branch sees the full scene (640×960), the other sees
+a padded crop of the 2D bounding box at fixed resolution (224×224). Both 512-d
+features are concatenated with the 8-d coordinate vector and fed to an MLP head.
 
 **Input:**
-- Full camera image (resized to 960×640)
+- Full camera image (resized to 640×960)
+- Padded box crop from the native-resolution image (10% padding, resized to 224×224)
 - `[cx_n, cy_n, sw_n, sh_n, fu, fv, cu, cv]` — normalized 2D box center, normalized box size, camera focal lengths, camera principal point
 
 **Output:** `[x, y, z]` in ego-vehicle frame (metres)
+
+The crop stream gives the head direct access to object-level features (textures,
+parts, sub-object structure) at high resolution, which the global-pooled full
+image would otherwise lose. Apparent size of the object is recovered through
+`sw_n, sh_n, fu, fv` in the coord vector.
 
 ## Setup
 

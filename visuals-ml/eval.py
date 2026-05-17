@@ -47,9 +47,12 @@ def main():
     abs_errors = torch.zeros(3)
     count = 0
     with torch.no_grad():
-        for image, coords, target in val_loader:
-            image, coords, target = image.to(device), coords.to(device), target.to(device)
-            pred = model(image, coords)
+        for image, crop, coords, target in val_loader:
+            image = image.to(device)
+            crop = crop.to(device)
+            coords = coords.to(device)
+            target = target.to(device)
+            pred = model(image, crop, coords)
             abs_errors += (pred - target).abs().sum(dim=0).cpu()
             count += len(target)
 

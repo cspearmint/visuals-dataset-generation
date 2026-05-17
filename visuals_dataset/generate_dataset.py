@@ -212,8 +212,9 @@ def apply_degradations_and_save(
     current_segment: Optional[str] = None
     scene_meta_dir: Path = out_dir  # placeholder, set per segment
     segment_tracks: Dict[str, List[Dict[str, Any]]] = {}
+    camera_counters: Dict[str, int] = {}
 
-    for idx, record in indexed_images:
+    for _, record in indexed_images:
         segment = str(record.get("segment_context_name", "unknown"))
         timestamp = int(record.get("timestamp_micros", 0))
 
@@ -224,21 +225,25 @@ def apply_degradations_and_save(
             scene_meta_dir = segment_dir / "metadata" / "scene_metadata"
             scene_meta_dir.mkdir(parents=True, exist_ok=True)
             current_segment = segment
+            camera_counters = {}
         camera_name = str(record.get("camera_name", "unknown"))
         frame_key = build_frame_key(segment, timestamp)
         scene_name = build_scene_name(segment, timestamp)
-        base_name = "%s_%03d" % (scene_name, idx)
 
         try:
             pil_img = decode_image(record["image_bytes"])
         except Exception as exc:
-            print("[warn] Failed to decode image %s: %s" % (base_name, exc))
+            print("[warn] Failed to decode image %s (%s): %s" % (scene_name, camera_name, exc))
             continue
 
         if pil_img.size != (1920, 1280):
             if verbose:
-                print("[skip] Ignoring %s — size %dx%d is not 1920x1280" % (base_name, pil_img.size[0], pil_img.size[1]))
+                print("[skip] Ignoring %s (%s) — size %dx%d is not 1920x1280" % (scene_name, camera_name, pil_img.size[0], pil_img.size[1]))
             continue
+
+        seq_idx = camera_counters.get(camera_name, 0)
+        camera_counters[camera_name] = seq_idx + 1
+        base_name = "%s_%03d" % (scene_name, seq_idx)
 
         if frame_key != current_frame_key:
             if verbose:
