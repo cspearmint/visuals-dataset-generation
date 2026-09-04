@@ -75,10 +75,14 @@ pretraining, unavailable); AlexNet input is 224 not 227; TV-L1 flow requires
    `positionnet` baseline:
    ```bash
    # inside the container, from visuals-ml/
-   python -m baselines.data.build_index --source-dir <DATASET_OUTPUT>
+   python -m data.build_index --source-dir <DATASET_OUTPUT>
    python -m baselines.train --config configs/positionnet.yaml
    # -> baselines/checkpoints/positionnet/best.pt
    ```
+   Note the module path: the PositionNet index builder is `data.build_index`
+   (top-level `data/`), *not* `baselines.data.build_index` — the latter does not
+   exist. On HiPerGator you can run both steps as a job with
+   `sbatch train_positionnet.sbatch`.
    The label pre-pass accepts either a harness checkpoint (keys under `core.`) or
    a bare PositionNet state dict.
 3. **The training Singularity image** (`train.sif`) — build once (step 2).
@@ -87,40 +91,80 @@ pretraining, unavailable); AlexNet input is 224 not 227; TV-L1 flow requires
 
 ## 2. Build the Singularity image
 
-The image is PyTorch + CUDA and **bakes the AlexNet pretrained weights inside**
-(compute nodes have no internet). Build it where you have `singularity`/`apptainer`
-with fakeroot — usually a HiPerGator login node or a dedicated build session.
+The image is PyTorch + CUDA. It **bakes the AlexNet, ResNet18 and ResNet50
+pretrained weights inside** (compute nodes have no internet) and **compiles
+MonoDETR's MultiScaleDeformableAttention CUDA op**. Build it where you have
+`singularity`/`apptainer` with fakeroot — usually a HiPerGator login node or a
+dedicated build session.
+
+The build needs the MonoDETR ops sources bind-mounted onto `/mnt`:
 
 ```bash
-cd /blue/<GROUP>/<USER>/visuals-dataset-generation/visuals-ml/hipergator
-# --fakeroot if your site requires it:
-singularity build --fakeroot train.sif train.def
+cd /blue/$GROUP/$HPG_USER/visuals-dataset-generation/visuals-ml/hipergator
+OPS=$(cd ../baselines/vendor/monodetr/lib/models/monodetr/ops && pwd)
+singularity build --fakeroot --bind "$OPS:/mnt:ro" train.sif train.def
 # then move/keep train.sif wherever the sbatch's SIF= points
 ```
 
-`requirements-ml.txt` must sit next to `train.def` (the `%files` section copies it).
+The bind source must be an **absolute** path, which is why `OPS` is computed with
+`pwd` rather than written as a relative path. The mount is read-only: `%post`
+copies the sources to `/tmp/ops` before patching, so the build never writes back
+into your checkout.
+
+**Why no `%files`.** `%files` is unreliable under `--fakeroot` on HiPerGator — it
+can log a successful copy while leaving the destination empty, surfacing later as
+a confusing `No such file or directory`. `train.def` therefore has no `%files`
+section at all: the pip requirements are inlined as a heredoc in `%post`, and the
+ops directory arrives via the bind mount above. Each step verifies its own inputs
+and aborts with an actionable message instead of failing silently.
+
+`requirements-ml.txt` is **no longer read by the build** — it stays in the repo for
+bare (non-container) pip installs. Edit both it and the heredoc in `train.def` if
+you change dependencies.
+
+If your site disables user bind mounts at build time (`allow user bind = no` in
+`singularity.conf`), use the `%setup` fallback documented in the `train.def`
+header — `%setup` runs on the host and copies straight into the image rootfs,
+needing neither `%files` nor `--bind`.
+
+Expected build output includes `[info] python deps OK`, `[info] cv2.optflow OK`,
+`[info] staged 14 ops files from /mnt`, and `[info] patched ops/setup.py`.
 
 ---
 
 ## 3. Configure and submit
 
-Edit the paths block at the top of `train_introspection.sbatch`:
+The sbatch scripts read their paths from the environment. `GROUP` and `HPG_USER`
+are required — leave either unset and the job aborts immediately with
+`GROUP: set me - your HiPerGator group ...` rather than a confusing error:
 
 ```bash
-REPO_ROOT=/blue/<GROUP>/<USER>/visuals-dataset-generation
-DATASET_OUTPUT=/blue/<GROUP>/<USER>/waymo/output   # the visuals output tree
-SIF=/blue/<GROUP>/<USER>/waymo/train.sif
-POSITIONNET_CKPT=baselines/checkpoints/positionnet/best.pt  # relative to visuals-ml/
-CONFIG=configs/introspection.yaml
-CAMERAS=1
+export GROUP=<your-group>
+export HPG_USER=$USER          # named HPG_USER because the shell always sets USER
 ```
-Also set `--account` / `--qos` (and `--partition`, if your GPU partition differs).
 
-Submit:
+Everything else has a default derived from those two, and can be overridden the
+same way if your layout differs:
+
+| Variable | Default |
+|---|---|
+| `REPO_ROOT` | `/blue/$GROUP/$HPG_USER/visuals-dataset-generation` |
+| `DATASET_OUTPUT` | `/blue/$GROUP/$HPG_USER/waymo/output` (the visuals output tree) |
+| `SIF` | `/blue/$GROUP/$HPG_USER/waymo/train.sif` |
+| `POSITIONNET_CKPT` | `baselines/checkpoints/positionnet/best.pt` (relative to `visuals-ml/`) |
+| `CONFIG` | `configs/introspection.yaml` |
+| `CAMERAS` | `1` |
+
+Submit (`sbatch` forwards your environment to the job by default):
 ```bash
-cd /blue/<GROUP>/<USER>/visuals-dataset-generation/visuals-ml/hipergator
-sbatch train_introspection.sbatch
+cd "$REPO_ROOT"/visuals-ml/hipergator
+sbatch --account=$GROUP --qos=$GROUP train_introspection.sbatch
 ```
+
+The `--account` / `--qos` flags go on the command line because `#SBATCH` lines are
+parsed by SLURM before the shell runs and get no variable expansion; the in-file
+`<GROUP>` placeholders on those two directives are the alternative to edit by hand.
+Set `--partition` too if your GPU partition differs.
 
 The job runs the whole chain inside the container: build index + labels (skipped
 if `data/output/introspection_labeled.jsonl` already exists) → train the CNN → fit
@@ -250,8 +294,12 @@ visuals-ml/
   configs/
     introspection.yaml                 # config (model: introspection)
   hipergator/
-    train.def                          # PyTorch/CUDA Singularity image (bakes weights)
-    requirements-ml.txt                # extra pip deps for the image
+    train.def                          # PyTorch/CUDA Singularity image (bakes weights,
+                                       #   builds MonoDETR's MSDeformAttn CUDA op)
+    requirements-ml.txt                # bare-metal pip deps; NOT read by train.def
+                                       #   (mirrored as a heredoc in its %post)
+    train_positionnet.sbatch           # SLURM job: PositionNet (introspection's prereq)
+    train_monodetr.sbatch              # SLURM job: MonoDETR
     train_introspection.sbatch         # SLURM job: full chain
     RUN_INTROSPECTION.md               # this file
 ```

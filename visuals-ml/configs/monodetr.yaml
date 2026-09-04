@@ -11,7 +11,40 @@ num_workers: 4
 val_split: 0.2
 seed: 42
 
-lr: 2.0e-4
+# --- optimization -----------------------------------------------------------
+# Retuned after three divergences (NaN at epoch 7, then 2). The key realisation
+# is one of scale: this dataset is ~29,286 batches/epoch, where MonoDETR's KITTI
+# recipe is ~232 (3712 imgs @ bs16). "195 epochs" was inherited from that recipe
+# and silently meant 5.7M optimizer steps here -- 127x the reference run -- with
+# a flat, undecayed LR and no meaningful warmup. Divergence was the expected
+# outcome, not bad luck.
+lr: 1.0e-4              # halved from 2.0e-4; DETR-family default at this batch
+                        # size, and conservative given the repeated divergences
+lr_backbone: 1.0e-5     # DETR convention: pretrained backbone gets ~10x lower
+                        # LR. The adapter sets train_backbone: True, but the
+                        # harness previously drove backbone and transformer at
+                        # one LR, which is a known way to wreck the backbone.
+weight_decay: 1.0e-4    # decoupled (AdamW); was plain undecayed Adam before
 clip_max_norm: 0.1      # MonoDETR's aleatoric depth loss needs gradient clipping
-epochs: 195
+warmup_iters: 1000      # per-ITERATION warmup. The previous warmup_epochs: 5
+                        # was epoch-granular -- a 5-step staircase across ~150k
+                        # steps, which is not a warmup. 1000 iters is the
+                        # DETR-family norm and covers the fragile early steps
+                        # while Adam's second moments are still noisy.
+warmup_start_factor: 0.001
+epochs: 30              # ~878k steps, still ~20x the reference run's total.
+                        # Lowered from 195 because that number only made sense
+                        # for KITTI-sized epochs; raise it if the loss is still
+                        # improving at the end.
+lr_schedule: cosine     # was a 10x step cliff at epoch 20 -- but training
+                        # diverged at epoch 9, so that drop never fired and the
+                        # LR was constant for every step actually trained.
+                        # Cosine decays continuously instead of betting on one
+                        # milestone the run may not reach.
+lr_min_factor: 0.01     # floor at 1% of base LR (1e-6 head / 1e-7 backbone)
+lr_drop: 20             # unused while lr_schedule is cosine; kept so switching
+lr_drop_gamma: 0.1      # back to 'step' needs no re-tuning
+# ~29k batches/epoch; snapshot latest.pt mid-epoch so a crash costs <1h, not a
+# whole epoch.
+checkpoint_every_n_batches: 5000
 checkpoint_dir: baselines/checkpoints/monodetr

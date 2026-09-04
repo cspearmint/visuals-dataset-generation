@@ -18,7 +18,19 @@ def box_cxcywh_to_xyxy(x):
 
 
 def box_cxcylrtb_to_xyxy(x):
+    # VISUALS-MOD: l/r/t/b are meant to be non-negative distances from the
+    # center to each edge (predicted boxes are sigmoid-bounded to [0, 1] by
+    # the decoder, and the dataset clamps ground-truth the same way), but
+    # nothing enforces that here -- and NaN/Inf can still reach this function
+    # if the network's raw logits go non-finite (e.g. early-training
+    # divergence), since NaN.sigmoid() == NaN. generalized_box_iou()'s
+    # degenerate-box assert then hard-crashes the whole run on a single bad
+    # box. Sanitize at this boundary instead: replace non-finite values with
+    # 0 and clamp the four distances to >=0, so callers always get a
+    # well-formed (possibly zero-area) box regardless of what produced it.
+    x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     x_c, y_c, l, r, t, b = x.unbind(-1)
+    l, r, t, b = l.clamp(min=0.0), r.clamp(min=0.0), t.clamp(min=0.0), b.clamp(min=0.0)
     bb = [(x_c - l), (y_c - t),
          (x_c + r), (y_c + b)]
     return torch.stack(bb, dim=-1)
@@ -44,7 +56,13 @@ def box_iou(boxes1, boxes2):
 
     union = area1[:, None] + area2 - inter
 
-    iou = inter / union
+    # VISUALS-MOD: a zero-area box (degenerate, but now valid post-clamp in
+    # box_cxcylrtb_to_xyxy) paired with another zero/near-zero-area box makes
+    # union exactly 0, so inter/union is 0/0 == NaN -- which then blows up
+    # matcher.py's cost matrix and crashes linear_sum_assignment. Floor the
+    # denominator instead of dividing by exactly 0; a degenerate box has no
+    # meaningful overlap with anything, so IoU -> 0 is the sane limit.
+    iou = inter / union.clamp(min=1e-7)
     return iou, union
 
 
@@ -69,7 +87,9 @@ def generalized_box_iou(boxes1, boxes2):
     wh = (rb - lt).clamp(min=0)  # [N,M,2]
     area = wh[:, :, 0] * wh[:, :, 1]
 
-    return iou - (area - union) / area
+    # VISUALS-MOD: same 0/0 risk as above -- two coincident degenerate boxes
+    # give an enclosing box of exactly 0 area too. Floor it the same way.
+    return iou - (area - union) / area.clamp(min=1e-7)
 
 
 def masks_to_boxes(masks):

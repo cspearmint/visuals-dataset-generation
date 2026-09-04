@@ -1,35 +1,199 @@
 Bootstrap: docker
-From: pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
+From: pytorch/pytorch:2.5.1-cuda12.1-cudnn9-devel
 
 # Singularity image for training the visuals-ml baselines on HiPerGator GPUs.
 # Separate from visuals-hipergator/hiker.def (that one is the TensorFlow +
 # ImageMagick *dataset-generation* image; this one is PyTorch + CUDA for *ML*).
 #
-# Build (on a machine with singularity + sudo/fakeroot):
-#   singularity build train.sif train.def
-
-%files
-    requirements-ml.txt /tmp/requirements-ml.txt
+# Covers all three baselines: positionnet, monodetr, introspection.
+#
+# NOTE: the base image is the `-devel` variant, not `-runtime`. The runtime image
+# ships no nvcc, and MonoDETR's MultiScaleDeformableAttention op is a CUDA
+# extension that must be compiled (see %post).
+#
+# ---------------------------------------------------------------------------
+# THERE IS DELIBERATELY NO %files SECTION.
+#
+# %files is unreliable under `singularity build --fakeroot` on HiPerGator: it can
+# log "Copying ... to ..." and still leave the destination empty, so the failure
+# only surfaces later as a confusing "No such file or directory". Both things it
+# used to stage are now handled inside %post, and each is verified explicitly
+# rather than trusted:
+#   * Python deps  -> inlined as a heredoc below (no host file needed at all).
+#   * MonoDETR ops -> read from a directory bind-mounted at build time onto /mnt.
+#
+# /mnt is the mount point because it already exists in the base image. Binding
+# onto a path that does not exist in the image can fail when overlay/underlay
+# support is off, which would reintroduce exactly the class of failure we are
+# working around.
+#
+# BUILD (run from this directory; the bind source must be an ABSOLUTE path):
+#
+#   cd visuals-ml/hipergator
+#   OPS=$(cd ../baselines/vendor/monodetr/lib/models/monodetr/ops && pwd)
+#   singularity build --fakeroot --bind "$OPS:/mnt:ro" train.sif train.def
+#
+# The bind is read-only on purpose: %post copies the sources to /tmp/ops before
+# patching them, so the build can never write back into your checkout.
+#
+# If your site disables user bind mounts at build time (`allow user bind = no`
+# in singularity.conf), use the %setup fallback instead — %setup runs on the
+# HOST and can copy straight into the image rootfs, needing neither %files nor
+# --bind. Add this section and drop the /mnt check in %post:
+#
+#   %setup
+#       cp -a ../baselines/vendor/monodetr/lib/models/monodetr/ops \
+#             "${SINGULARITY_ROOTFS}/tmp/ops"
+# ---------------------------------------------------------------------------
 
 %post
+    set -eu
     export DEBIAN_FRONTEND=noninteractive
-    # libGL + glib for opencv-python at runtime.
+    # libGL + glib for opencv-python at runtime; ninja speeds up the CUDA build.
     apt-get update && apt-get install -y --no-install-recommends \
         libgl1-mesa-glx \
         libglib2.0-0 \
+        ninja-build \
         && rm -rf /var/lib/apt/lists/*
+
+    # ---- Python deps (inlined; previously staged via %files) -----------------
+    # KEEP IN SYNC with hipergator/requirements-ml.txt. That file is no longer
+    # read by this build — it remains for bare (non-container) pip installs — so
+    # the two can drift if you edit one and not the other.
+    cat > /tmp/requirements-ml.txt <<'REQS'
+opencv-contrib-python>=4.8
+scikit-learn>=1.3
+scipy>=1.10
+pyyaml>=6.0
+pillow>=9.0
+numpy>=1.24
+psutil>=5.9
+REQS
+
+    # The heredoc cannot silently produce nothing the way %files could, but check
+    # anyway so a future edit that breaks it fails here instead of mid-install.
+    test -s /tmp/requirements-ml.txt || { echo "[error] requirements heredoc is empty"; exit 1; }
+    echo "[info] requirements to install:"; cat /tmp/requirements-ml.txt
 
     pip install --no-cache-dir --upgrade pip
     pip install --no-cache-dir -r /tmp/requirements-ml.txt
 
-    # Bake pretrained weights INTO the image. HiPerGator compute nodes usually
-    # have no internet, so the runtime alexnet(weights=DEFAULT) download would
-    # fail. Cache it here (build host has internet) at a fixed in-image path that
-    # won't be shadowed by the host $HOME bind mount at runtime.
+    # Confirm the imports the baselines actually depend on.
+    python -c "import cv2, sklearn, scipy, yaml, PIL, numpy, psutil; print('[info] python deps OK')"
+    python -c "import cv2; assert hasattr(cv2, 'optflow'), 'opencv-contrib missing (TV-L1)'; print('[info] cv2.optflow OK')"
+
+    # ---- Bake pretrained weights INTO the image ------------------------------
+    # HiPerGator compute nodes usually have no internet, so a runtime
+    # weights=DEFAULT download would fail. Cache them here (the build host has
+    # internet) at a fixed in-image path that won't be shadowed by the host
+    # $HOME bind mount at runtime.
+    #   alexnet  -> introspection (both streams)
+    #   resnet18 -> positionnet
+    #   resnet50 -> monodetr backbone
     export TORCH_HOME=/opt/torch-cache
     mkdir -p /opt/torch-cache
-    python -c "import torchvision; torchvision.models.alexnet(weights='DEFAULT')"
+    python - <<'WEIGHTS'
+from torchvision.models import get_model_weights
+
+# Bake EVERY weight variant of each backbone, not just DEFAULT.
+#
+# MonoDETR's backbone (vendor/.../backbone.py) uses the LEGACY api:
+#     torchvision.models.resnet50(pretrained=is_main_process(), ...)
+# `pretrained=True` resolves to IMAGENET1K_V1, whereas weights="DEFAULT"
+# resolves to IMAGENET1K_V2 for resnet50 -- a DIFFERENT checkpoint file.
+# Baking only DEFAULT therefore left a cache miss, and the runtime download
+# attempt died with "OSError: Read-only file system" because the SIF is
+# immutable. Enumerating every variant makes the cache hit regardless of which
+# API the model code uses.
+for name in ("alexnet", "resnet18", "resnet50"):
+    for w in get_model_weights(name):
+        w.get_state_dict(progress=False)
+        print(f"[info] cached {name}: {w.name}")
+WEIGHTS
     chmod -R a+rX /opt/torch-cache
+    echo "[info] cached weight files:"; ls -1 /opt/torch-cache/hub/checkpoints
+
+    # ---- Stage MonoDETR ops from the build-time bind mount -------------------
+    # This is the step %files used to do. Verify it loudly: an empty or missing
+    # mount is the exact silent failure we are working around.
+    OPS_SRC=/mnt
+    if [ ! -f "$OPS_SRC/setup.py" ] || [ ! -d "$OPS_SRC/src/cuda" ]; then
+        echo "[error] MonoDETR ops sources not found at $OPS_SRC."
+        echo "[error] The build needs the ops directory bind-mounted there:"
+        echo "[error]   OPS=\$(cd ../baselines/vendor/monodetr/lib/models/monodetr/ops && pwd)"
+        echo "[error]   singularity build --fakeroot --bind \"\$OPS:/mnt:ro\" train.sif train.def"
+        echo "[error] (bind source must be an absolute path)"
+        exit 1
+    fi
+    mkdir -p /tmp/ops
+    cp -a "$OPS_SRC/." /tmp/ops/
+    test -f /tmp/ops/src/cuda/ms_deform_attn_cuda.cu || { echo "[error] ops copy incomplete"; exit 1; }
+    echo "[info] staged $(find /tmp/ops -type f | wc -l) ops files from $OPS_SRC"
+
+    # ---- Compile MonoDETR's MultiScaleDeformableAttention --------------------
+    # Without this the vendored code silently falls back to a pure-PyTorch
+    # implementation (see ops/functions/ms_deform_attn_func.py) — correct but
+    # much slower. Two upstream problems have to be patched first:
+    #   1. setup.py refuses to build unless a GPU is visible, but image builds
+    #      run on GPU-less login/build nodes. Gate on FORCE_CUDA instead.
+    #   2. upstream hardcodes -arch=sm_60 with gencodes only up to sm_75 and no
+    #      PTX, so the .so will not load on Ampere (A100, sm_80) or Hopper
+    #      (H100, sm_90). Retarget to sm_70/80/90 + PTX for forward compat.
+    #      Trim this list if your partition is a single GPU generation.
+    cd /tmp/ops
+    python - <<'PY'
+import pathlib
+import re
+
+p = pathlib.Path("setup.py")
+s = p.read_text()
+
+s, n_guard = re.subn(
+    r"if torch\.cuda\.is_available\(\) and CUDA_HOME is not None:",
+    'if (torch.cuda.is_available() or os.getenv("FORCE_CUDA") == "1") '
+    "and CUDA_HOME is not None:",
+    s,
+)
+
+s, n_arch = re.subn(
+    r'\n\s*"-arch=sm_60",\n(?:\s*"-gencode=arch=compute_\d+,code=sm_\d+",\n)+',
+    '\n            "-gencode=arch=compute_70,code=sm_70",\n'
+    '            "-gencode=arch=compute_80,code=sm_80",\n'
+    '            "-gencode=arch=compute_90,code=sm_90",\n'
+    '            "-gencode=arch=compute_90,code=compute_90",\n',
+    s,
+)
+
+# Fail the build loudly if upstream changed shape, rather than shipping a .so
+# that silently targets the wrong architecture.
+assert n_guard == 1, f"CUDA guard not patched (matched {n_guard})"
+assert n_arch == 1, f"arch list not patched (matched {n_arch})"
+assert "-arch=sm_60" not in s
+
+p.write_text(s)
+print("[info] patched ops/setup.py")
+PY
+
+    FORCE_CUDA=1 python setup.py build_ext
+    # Install only the compiled extension. `setup.py install` would also drop the
+    # generic `functions`/`modules` packages into site-packages, where they could
+    # shadow unrelated top-level imports; the Python wrappers are already in the
+    # repo tree and get imported from there.
+    SITE=$(python -c "import site; print(site.getsitepackages()[0])")
+    cp build/lib*/MultiScaleDeformableAttention*.so "$SITE"/
+    test -n "$(ls "$SITE"/MultiScaleDeformableAttention*.so 2>/dev/null)" \
+        || { echo "[error] compiled .so was not installed into $SITE"; exit 1; }
+    cd /
+    rm -rf /tmp/ops
+
+    # Import check. Loading a CUDA extension without a visible GPU normally
+    # works, but don't fail the whole build if this particular host disagrees —
+    # the runtime check in the sbatch is what actually matters.
+    # `import torch` MUST come first: the extension links against torch's C++
+    # symbols, and importing it standalone fails with an undefined-symbol error
+    # even when the .so is perfectly good.
+    python -c "import torch; import MultiScaleDeformableAttention; print('[info] MSDeformAttn ext OK')" \
+        || echo "[warn] MSDeformAttn ext did not import at build time; verify on a GPU node"
 
 %environment
     export LC_ALL=C.UTF-8
@@ -40,4 +204,4 @@ From: pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
 %labels
     Author visuals-dataset-generation
-    Purpose PyTorch/CUDA training for visuals-ml baselines (introspection, etc.)
+    Purpose PyTorch/CUDA training for visuals-ml baselines (positionnet, monodetr, introspection)
