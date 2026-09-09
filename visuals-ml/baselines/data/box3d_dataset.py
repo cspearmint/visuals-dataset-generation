@@ -44,6 +44,31 @@ from torchvision import transforms
 
 from data.dataset import _crop_box_for
 
+# Rahi's PR #4 added corrupt-image and Windows-path handling for the older
+# datasets. Import defensively so this file works on a branch without them:
+# the generated tree contains truncated JPEGs (partial writes during
+# generation), and one of them will otherwise kill a multi-hour training run.
+try:
+    from data.paths import to_posix
+    from data.robust_load import load_skipping_corrupt
+except ImportError:                                     # pragma: no cover
+    def to_posix(path):
+        return str(path).replace("\\", "/")
+
+    def load_skipping_corrupt(n, idx, build_fn, context="", bad_indices=None):
+        from PIL import UnidentifiedImageError
+        for offset in range(n):
+            i = (idx + offset) % n
+            if bad_indices is not None and i in bad_indices:
+                continue
+            try:
+                return i, build_fn(i)
+            except (OSError, UnidentifiedImageError) as e:
+                if bad_indices is not None:
+                    bad_indices.add(i)
+                print(f"[{context}] skipping corrupt sample {i}: {e}", flush=True)
+        raise RuntimeError(f"[{context}] no readable samples in dataset")
+
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
 
@@ -143,6 +168,8 @@ class Box3DDataset(Dataset):
                     f"{r['segment']}|{r.get('camera')}|{r.get('stem')}"
                 )
 
+        self._bad_indices = set()
+
         dropped = n_drop_geom + n_drop_size + n_drop_pts + n_drop_trunc
         if dropped:
             print(f"Box3DDataset: dropped {dropped} objects "
@@ -161,12 +188,18 @@ class Box3DDataset(Dataset):
         return len(self.pairs)
 
     def __getitem__(self, idx):
+        _resolved, sample = load_skipping_corrupt(
+            len(self.pairs), idx, self._build, context="Box3DDataset",
+            bad_indices=self._bad_indices)
+        return sample
+
+    def _build(self, idx):
         ri, oi = self.pairs[idx]
         r = self.records[ri]
         o = r["objects"][oi]
         native_w, native_h = r["image_size"]
 
-        img = Image.open(r["image_path"]).convert("RGB")
+        img = Image.open(to_posix(r["image_path"])).convert("RGB")
         cx, cy, sw, sh = o["box_2d"]
         cx_n, cy_n = cx / native_w, cy / native_h
         sw_n, sh_n = sw / native_w, sh / native_h
