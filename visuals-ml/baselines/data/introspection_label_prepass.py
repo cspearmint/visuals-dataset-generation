@@ -37,6 +37,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from data.paths import to_posix
 from data.dataset import (
     INPUT_KEYS, _crop_box_for, _to_crop_tensor, _to_full_tensor,
 )
@@ -46,7 +47,7 @@ from model.position_net import PositionNet
 def _load_positionnet(checkpoint: str, device) -> PositionNet:
     """Load a PositionNet core from either a harness checkpoint (keys prefixed
     'core.') or a bare PositionNet state dict."""
-    ckpt = torch.load(checkpoint, map_location=device)
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
     core = {}
     for k, v in state.items():
@@ -67,7 +68,7 @@ def _load_positionnet(checkpoint: str, device) -> PositionNet:
 def _frame_inputs(record, device):
     """Build PositionNet inputs for every object in a frame. The full image is
     shared; crops/coords/targets are per object."""
-    img = Image.open(record["image_path"]).convert("RGB")
+    img = Image.open(to_posix(record["image_path"])).convert("RGB")
     w, h = img.size
     full = _to_full_tensor(img)
 

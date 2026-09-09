@@ -24,6 +24,7 @@ calib fx and box-height in pixels) is internally consistent.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 
@@ -32,6 +33,11 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
+
+from data.paths import to_posix
+from data.robust_load import load_skipping_corrupt
+
+logger = logging.getLogger(__name__)
 
 # vendored angle encoder
 from baselines.data._vendor_path import ensure_vendor_on_path
@@ -58,6 +64,7 @@ class DetectionDataset(Dataset):
         self.res_w, self.res_h = int(resolution[0]), int(resolution[1])
         self.mean_size = np.asarray(mean_size, dtype=np.float32)
         self.clip_2d = clip_2d
+        self._bad_indices = set()
         self._to_tensor = transforms.Compose([
             transforms.Resize((self.res_h, self.res_w)),
             transforms.ToTensor(),
@@ -75,9 +82,36 @@ class DetectionDataset(Dataset):
         return P, (fu, fv, cu, cv)
 
     def __getitem__(self, idx):
-        r = self.records[idx]
+        def build(i):
+            r = self.records[i]
+            # Validate the image-level geometry BEFORE opening the file. The
+            # per-object loop below already screens box_2d/loc, but calib and
+            # image_size were used unchecked -- and they are far more
+            # dangerous, because they are not per-object: calib feeds
+            # depth_geo = size3d / box2d_height * calibs[:, 0, 0] inside the
+            # model, so one non-finite intrinsic turns pred_depth into NaN for
+            # the WHOLE image and every loss component dies at once, with
+            # healthy weights. A zero/NaN image_size does the same via the
+            # res/native scale factors. Raising OSError routes this through
+            # the same skip-and-blacklist path as a corrupt file.
+            nw, nh = r["image_size"]
+            intr = r["intrinsic"]
+            vals = [nw, nh] + [intr.get(k) for k in ("f_u", "f_v", "c_u", "c_v")]
+            if any(v is None or not math.isfinite(v) for v in vals):
+                raise OSError(f"record {i}: non-finite image_size/intrinsic "
+                              f"(image_size={r['image_size']}, intrinsic={intr})")
+            if nw <= 0 or nh <= 0:
+                raise OSError(f"record {i}: non-positive image_size "
+                              f"{r['image_size']}")
+
+            img = Image.open(to_posix(r["image_path"]))
+            img.load()  # force decode now so truncated/empty files raise here
+            return r, img.convert("RGB")
+
+        _, (r, img) = load_skipping_corrupt(
+            len(self.records), idx, build, context="DetectionDataset",
+            bad_indices=self._bad_indices)
         native_w, native_h = r["image_size"]
-        img = Image.open(r["image_path"]).convert("RGB")
         image = self._to_tensor(img)
 
         P, (fu, fv, cu, cv) = self._calib(r["intrinsic"], native_w, native_h)
@@ -98,6 +132,17 @@ class DetectionDataset(Dataset):
                 break
             cx, cy, w, h = o["box_2d"]                 # native pixels
             x, y, z = o["loc"]                         # optical frame, metres
+            # Guard against NaN/Inf leftovers from earlier pipeline failures:
+            # Python's `<`/`min()` are always False/skip-through on NaN, so an
+            # unchecked NaN here would sail past the z<=1e-3 guard below and
+            # later past the min(...)<0 clip, landing in boxes_3d unclamped
+            # and tripping the xyxy-conversion assert deep in the loss.
+            if not all(math.isfinite(v) for v in (cx, cy, w, h, x, y, z)):
+                logger.warning("Skipping object with non-finite box_2d/loc: %s", o)
+                continue
+            if w <= 0 or h <= 0:
+                logger.warning("Skipping degenerate zero/negative-size box_2d: %s", o)
+                continue
             if z <= 1e-3:
                 continue
             # projected 3D center in resolution pixels (pinhole, scaled intrinsics)
@@ -114,6 +159,9 @@ class DetectionDataset(Dataset):
             y2_n = (cy + h / 2) / native_h
             l, rr = cx3d_n - x1_n, x2_n - cx3d_n
             t, bb = cy3d_n - y1_n, y2_n - cy3d_n
+            if not all(math.isfinite(v) for v in (l, rr, t, bb)):
+                logger.warning("Skipping object with non-finite cxcylrtb box: %s", o)
+                continue
             if min(l, rr, t, bb) < 0:
                 if self.clip_2d:
                     l, rr = max(l, 0.0), max(rr, 0.0)
