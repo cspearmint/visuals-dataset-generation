@@ -141,6 +141,7 @@ class Box3DDataset(Dataset):
         #             frames of the same track still straddle the split, so val
         #             is optimistic. For smoke runs on a 1-2 segment sample.
         self.pairs, self.groups, self.groups_frame = [], [], []
+        self.weathers = []      # weather of each sample, for ablations
         n_drop_geom = n_drop_size = n_drop_pts = n_drop_trunc = 0
         for ri, r in enumerate(records):
             for oi, o in enumerate(r["objects"]):
@@ -167,6 +168,7 @@ class Box3DDataset(Dataset):
                 self.groups_frame.append(
                     f"{r['segment']}|{r.get('camera')}|{r.get('stem')}"
                 )
+                self.weathers.append(r.get("weather", "unknown"))
 
         self._bad_indices = set()
 
@@ -175,6 +177,10 @@ class Box3DDataset(Dataset):
             print(f"Box3DDataset: dropped {dropped} objects "
                   f"(geometry {n_drop_geom}, truncated {n_drop_trunc}, "
                   f"box<{min_box_px}px {n_drop_size}, pts<{min_pts} {n_drop_pts})")
+
+    def weather_of(self, idx: int) -> str:
+        """Weather variant of sample `idx` (used by the weather ablations)."""
+        return self.weathers[idx]
 
     def groups_for(self, kind: str):
         """Grouping keys for split_by_group. 'segment' (default) or 'frame'."""

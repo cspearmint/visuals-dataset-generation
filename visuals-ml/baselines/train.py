@@ -28,12 +28,21 @@ def main():
                              "separate configs.")
     parser.add_argument("--checkpoint-dir", default=None,
                         help="Override the config's checkpoint_dir.")
+    parser.add_argument("--train-weathers", default=None,
+                        help="Weather ablation. 'all' (default), a comma list "
+                             "like 'clear,rain,fog', or 'randomN' for clear plus "
+                             "N alterations drawn with the config seed. Applied "
+                             "to the TRAIN side only -- validation always keeps "
+                             "all 10 variants so ablations stay comparable.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     cfg = apply_index_suffix(cfg, args.index_suffix)
     if args.checkpoint_dir:
         cfg["checkpoint_dir"] = args.checkpoint_dir
+    if args.train_weathers:
+        cfg["train_weathers"] = (
+            None if args.train_weathers == "all" else args.train_weathers)
 
     # cfg['seed'] previously only seeded the train/val split (a local
     # random.Random in core/utils.split_dataset); torch's global RNG was left

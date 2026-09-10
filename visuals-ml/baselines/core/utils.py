@@ -142,3 +142,76 @@ def subsample_frames(records, stride: int):
     print(f"Frame stride {stride}: {len(records)} -> {len(out)} records "
           f"({n_frames} frames x all weathers)")
     return out
+
+
+WEATHER_VARIANTS = [
+    "clear", "rain", "fog", "snow", "frost",
+    "sunglare", "brightness", "wildfire_smoke", "dust", "waterdrop",
+]
+ALTERATIONS = [w for w in WEATHER_VARIANTS if w != "clear"]
+
+
+def resolve_train_weathers(spec, seed: int):
+    """Turn a train-weather spec into an explicit list, or None for 'all'.
+
+    Accepts:
+      None / "all"        -> None (every variant; the default run)
+      list of names       -> that list, validated
+      "clear"             -> ["clear"]
+      "clear,rain,fog"    -> those three
+      "random<N>"         -> clear + N alterations drawn WITHOUT replacement from
+                             the 9 non-clear variants, seeded so the draw is
+                             reproducible from (spec, seed) alone.
+
+    The chosen set is returned sorted; callers print it so the run's log records
+    exactly which variants trained, including for a random draw.
+    """
+    if spec is None or spec == "all":
+        return None
+
+    if isinstance(spec, str):
+        spec = spec.strip()
+        if spec.startswith("random"):
+            n = int(spec[len("random"):] or 0)
+            if not 1 <= n <= len(ALTERATIONS):
+                raise ValueError(
+                    f"random{n}: N must be 1..{len(ALTERATIONS)} (the alteration pile)"
+                )
+            drawn = random.Random(seed).sample(ALTERATIONS, n)
+            return sorted(["clear"] + drawn)
+        spec = [w.strip() for w in spec.split(",") if w.strip()]
+
+    spec = list(spec)
+    unknown = set(spec) - set(WEATHER_VARIANTS)
+    if unknown:
+        raise ValueError(f"Unknown weather variant(s): {sorted(unknown)}")
+    return sorted(spec)
+
+
+def filter_train_subset(dataset, train_subset, weathers_of, keep):
+    """Restrict a TRAIN Subset to samples whose weather is in `keep`.
+
+    Applied AFTER the split, on the train side only, so validation keeps all 10
+    variants for every ablation. That is what makes the ablations comparable:
+    each one trains on a different weather subset but is scored on the same
+    all-weather held-out segments. Filtering before the split would give each
+    variant its own test set and the numbers could not be compared.
+
+    `weathers_of` maps a dataset index -> weather string.
+    """
+    from torch.utils.data import Subset
+
+    if keep is None:
+        return train_subset
+    keep = set(keep)
+    idx = [i for i in train_subset.indices if weathers_of(i) in keep]
+    if not idx:
+        raise ValueError(
+            f"No training samples left after restricting to {sorted(keep)}. "
+            "Check the weather names against what the index actually contains."
+        )
+    dropped = len(train_subset.indices) - len(idx)
+    print(f"Train weathers {sorted(keep)}: kept {len(idx)} / "
+          f"{len(train_subset.indices)} train samples (dropped {dropped}). "
+          "Validation keeps ALL variants.")
+    return Subset(dataset, idx)

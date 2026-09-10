@@ -20,7 +20,7 @@ from baselines.core.interface import BaselineModel
 from baselines.core.metrics import CenterErrorMetric, Sample
 from baselines.core.registry import register_model
 from baselines.core.utils import (
-    split_by_group, split_dataset, subsample_frames,
+    resolve_train_weathers, split_by_group, split_dataset, subsample_frames,
 )
 from baselines.data._vendor_path import ensure_vendor_on_path
 from baselines.data.detection_dataset import (
@@ -69,13 +69,8 @@ class MonoDETRBaseline(BaselineModel):
     def build_datasets(self, cfg: dict):
         records = load_records(cfg["index_file"])
         print(f"Detection records: {len(records)} images")
-        train_weathers = cfg.get("train_weathers")
-        if train_weathers:
-            keep = set(train_weathers)
-            records = [r for r in records if r.get("weather") in keep]
-            print(f"Filtered to weathers {sorted(keep)}: {len(records)} records")
-        # See box3d_net.build_datasets: all 10 weathers stay on both sides of the
-        # split; compute is cut by thinning frames, not weather variants.
+        # Compute is cut by thinning FRAMES, never weathers. Weather restriction
+        # happens AFTER the split (below), on the train side only.
         records = subsample_frames(records, cfg.get("frame_stride", 1))
 
         mean = compute_mean_size(records)
@@ -113,6 +108,24 @@ class MonoDETRBaseline(BaselineModel):
             )
         train_recs = [records[i] for i in train_recs.indices]
         val_recs = [records[i] for i in val_recs.indices]
+
+        # Weather ablation, TRAIN side only and AFTER the split, so every variant
+        # is scored on the SAME all-weather held-out segments. Filtering before
+        # the split would give each ablation its own test set and the runs could
+        # not be compared. Mirrors box3d_net.build_datasets.
+        keep = resolve_train_weathers(cfg.get("train_weathers"), cfg["seed"])
+        if keep is not None:
+            before = len(train_recs)
+            train_recs = [r for r in train_recs if r.get("weather") in set(keep)]
+            if not train_recs:
+                raise ValueError(
+                    f"No training records left after restricting to {keep}. "
+                    "Check the weather names against the index contents."
+                )
+            print(f"Weather ablation -> training on {keep}")
+            print(f"Train weathers {keep}: kept {len(train_recs)} / {before} "
+                  "train records. Validation keeps ALL variants.")
+
         make = lambda recs: DetectionDataset(recs, self.resolution, mean)
         return make(train_recs), make(val_recs)
 
