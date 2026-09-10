@@ -1,0 +1,31 @@
+# MonoDETR — evaluation of the run that COMPLETED BEFORE the segment split
+# shipped. Read this before quoting any number it produces.
+#
+# `split_mode: record` reproduces the original row-level shuffle so the
+# checkpoint is scored against the set it was actually held out from. Running the
+# current segment split instead would build a different val set and score the
+# model partly on its own training frames.
+#
+# THESE NUMBERS ARE IN-DISTRIBUTION FIT, NOT GENERALIZATION. The index carries 10
+# weather renderings of every frame and the row-level split scattered them across
+# train and val, so ~every val frame had weather-siblings in training. Report
+# them as preliminary; the corrected-split retrain is the reportable result.
+#
+# Split-determining keys (index_file, val_split, seed, and the ABSENCE of
+# train_weathers) must match what the original run used.
+model: monodetr
+
+index_file: data/output/det_records.jsonl
+
+resolution: [960, 640]
+score_thresh: 0.2
+
+batch_size: 8
+num_workers: 7
+val_split: 0.2
+seed: 42
+
+split_mode: record        # LEGACY row-level split — logs a warning when used
+
+amp: false
+checkpoint_dir: baselines/checkpoints/monodetr
