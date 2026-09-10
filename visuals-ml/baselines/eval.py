@@ -28,12 +28,20 @@ def main():
                         help="Insert '_<suffix>' before .jsonl in index_file. "
                              "Use the all-weather index here: weather is the "
                              "test axis, so evaluation must span every variant.")
+    parser.add_argument("--checkpoint-dir", default=None,
+                        help="Override the config's checkpoint_dir (the "
+                             "weather ablations each write their own).")
     parser.add_argument("--report", default=None,
                         help="Write the full metrics dict to this JSON path.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     cfg = apply_index_suffix(cfg, args.index_suffix)
+    if args.checkpoint_dir:
+        cfg["checkpoint_dir"] = args.checkpoint_dir
+    # Evaluation NEVER restricts weather: every ablation is scored on the same
+    # all-weather held-out segments, which is what makes them comparable.
+    cfg["train_weathers"] = None
     checkpoint = args.checkpoint or f"{cfg['checkpoint_dir']}/best.pt"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

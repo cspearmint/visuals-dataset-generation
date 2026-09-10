@@ -28,7 +28,10 @@ from torchvision.models import resnet18, ResNet18_Weights
 from baselines.core.interface import BaselineModel
 from baselines.core.iou3d import iou_3d
 from baselines.core.registry import register_model
-from baselines.core.utils import split_by_group, subsample_frames
+from baselines.core.utils import (
+    filter_train_subset, resolve_train_weathers, split_by_group,
+    subsample_frames,
+)
 from baselines.data.box3d_dataset import (
     Box3DDataset, compute_dim_anchor, decode_targets, load_records,
 )
@@ -122,19 +125,8 @@ class Box3DBaseline(BaselineModel):
     # MonoDETR's adapter uses for mean_size.
     def build_datasets(self, cfg: dict):
         records = load_records(cfg["index_file"])
-        # ALL 10 weather variants are kept on BOTH sides of the split. The
-        # downstream visuals agent trains on the whole weather-augmented set, so
-        # the baselines must match it: a training segment contributes every one
-        # of its renderings, and the held-out segments -- entirely different
-        # images -- are scored across every rendering too. train_weathers still
-        # exists for later experiments but is deliberately unset by default.
-        train_weathers = cfg.get("train_weathers")
-        if train_weathers:
-            keep = set(train_weathers)
-            records = [r for r in records if r.get("weather") in keep]
-            print(f"Filtered to weathers {sorted(keep)}: {len(records)} image records")
         # Compute is cut by thinning FRAMES (~10 Hz near-duplicates), never
-        # weathers.
+        # weathers. Weather restriction happens AFTER the split (below).
         records = subsample_frames(records, cfg.get("frame_stride", 1))
 
         anchor = cfg.get("dim_anchor") or compute_dim_anchor(records)
@@ -157,8 +149,19 @@ class Box3DBaseline(BaselineModel):
         if group_by != "segment":
             print(f"WARNING: group_by={group_by!r} — validation is optimistic. "
                   "Only 'segment' gives a leak-free split; see box3d_dataset.py.")
-        return split_by_group(ds, ds.groups_for(group_by),
-                              cfg["val_split"], cfg["seed"])
+        train_set, val_set = split_by_group(
+            ds, ds.groups_for(group_by), cfg["val_split"], cfg["seed"])
+
+        # Weather ablation. The filter is applied to the TRAIN side only, after
+        # the split, so every variant is scored on the SAME all-weather held-out
+        # segments and the runs are comparable. Filtering before the split would
+        # give each ablation its own test set.
+        keep = resolve_train_weathers(cfg.get("train_weathers"), cfg["seed"])
+        if keep is not None:
+            print(f"Weather ablation -> training on {keep}")
+        train_set = filter_train_subset(
+            ds, train_set, lambda i: ds.weather_of(i), keep)
+        return train_set, val_set
 
     @classmethod
     def from_config(cls, cfg: dict):
