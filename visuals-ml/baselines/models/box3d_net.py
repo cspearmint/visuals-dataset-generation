@@ -113,8 +113,14 @@ class Box3DBaseline(BaselineModel):
         self.w_dim = cfg.get("w_dim", 1.0)
         self.w_angle = cfg.get("w_angle", 1.0)
 
-    @staticmethod
-    def build_datasets(cfg: dict):
+    # Instance method, not static: it must publish the computed dimension
+    # anchor into self.dim_anchor. The dataset ENCODES size targets as
+    # log(dim / anchor) using the anchor computed from the records, so decode
+    # has to use that same value. Previously decode used the config/default
+    # anchor instead, which silently rescaled every dimension prediction (and
+    # therefore dim_mae and 3D IoU) by the ratio between the two. Same pattern
+    # MonoDETR's adapter uses for mean_size.
+    def build_datasets(self, cfg: dict):
         records = load_records(cfg["index_file"])
         train_weathers = cfg.get("train_weathers")
         if train_weathers:
@@ -122,8 +128,11 @@ class Box3DBaseline(BaselineModel):
             records = [r for r in records if r.get("weather") in keep]
             print(f"Filtered to weathers {sorted(keep)}: {len(records)} image records")
 
-        anchor = compute_dim_anchor(records)
-        print(f"Dimension anchor (h, w, l) = {np.round(anchor, 3).tolist()}")
+        anchor = cfg.get("dim_anchor") or compute_dim_anchor(records)
+        anchor = np.asarray(anchor, dtype=np.float32)
+        self.dim_anchor.copy_(torch.from_numpy(anchor))
+        print(f"Dimension anchor (h, w, l) = {np.round(anchor, 3).tolist()} "
+              "(encode and decode now share this)")
 
         ds = Box3DDataset(
             records,
