@@ -9,8 +9,9 @@
 #
 # Step 1 is skipped if the index already exists.
 #
-# Note the walltime: configs/monodetr.yaml is 195 epochs (the upstream schedule).
-# Lower `epochs` in the config if you only need a shorter run.
+# Walltime: configs/monodetr.yaml is now 30 epochs on CLEAR ONLY (~3.2k
+# batches/epoch), so expect ~8-10 h rather than the 60-90 h an all-weather run
+# would take. Evaluation spans all 10 variants via configs/monodetr_eval.yaml.
 #
 # Usage:
 #   export GROUP=<your-group> HPG_USER=$USER
@@ -51,10 +52,11 @@ REPO_ROOT=${REPO_ROOT:-/blue/${GROUP}/${HPG_USER}/visuals-dataset-generation}
 DATASET_OUTPUT=${DATASET_OUTPUT:-/blue/${GROUP}/${HPG_USER}/waymo/output}  # visuals_dataset output tree
 SIF=${SIF:-/blue/${GROUP}/${HPG_USER}/waymo/train.sif}
 CONFIG=${CONFIG:-configs/monodetr.yaml}
+EVAL_CONFIG=${EVAL_CONFIG:-configs/monodetr_eval.yaml}
 CAMERAS=${CAMERAS:-1}
 # -----------------------------------------------------------------------------
 
-mkdir -p logs
+mkdir -p logs reports
 
 module load singularity
 
@@ -115,8 +117,13 @@ fi
 echo '[info] Training MonoDETR'
 python -m baselines.train --config '${CONFIG}'
 
-echo '[info] Evaluating best checkpoint'
-python -m baselines.eval --config '${CONFIG}'
+echo '[info] Evaluating best checkpoint across all 10 weather variants'
+# EVAL_CONFIG, not CONFIG: training uses clear only, evaluation spans every
+# weather. Different configs on purpose -- do not collapse them.
+python -m baselines.eval --config '${EVAL_CONFIG}'     --report reports/final_monodetr.json
+
+echo '[info] === split fingerprints (train and eval val= hashes MUST match) ==='
+grep -h 'Group split fingerprint' /workspace/visuals-ml/logs/monodetr_*.out 2>/dev/null | tail -4 || true
 "
 
 echo "[info] MonoDETR training done."

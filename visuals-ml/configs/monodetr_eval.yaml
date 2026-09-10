@@ -1,0 +1,30 @@
+# MonoDETR — FINAL EVALUATION across all 10 weather variants.
+#
+# Pairs with configs/monodetr.yaml (which trains on clear only). Weather is the
+# TEST axis: train on clear, score on everything.
+#
+# Every split-determining key (index_file, val_split, seed, split_mode) MUST
+# match configs/monodetr.yaml, or the split diverges and the "held-out" set fills
+# with segments the model trained on. Verify by comparing the
+# `Group split fingerprint:` val= hash in the training log and this eval's log.
+#
+# NOT the same file as configs/monodetr_legacy_eval.yaml -- that one exists only
+# to score the older run that predates the segment split.
+model: monodetr
+
+index_file: data/output/det_records.jsonl
+
+resolution: [960, 640]
+score_thresh: 0.2
+
+batch_size: 8
+num_workers: 7
+val_split: 0.2
+seed: 42
+group_by: segment
+
+# UNSET on purpose -> evaluate on all 10 weather variants.
+train_weathers: null
+
+amp: false
+checkpoint_dir: baselines/checkpoints/monodetr

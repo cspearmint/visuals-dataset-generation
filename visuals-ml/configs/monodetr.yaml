@@ -7,7 +7,7 @@ resolution: [960, 640]   # network input W x H (preserves Waymo 1.5 aspect)
 score_thresh: 0.2
 
 batch_size: 8
-num_workers: 4
+num_workers: 7      # cpus-per-task is 8 in the sbatch
 val_split: 0.2
 seed: 42
 
@@ -62,3 +62,30 @@ checkpoint_dir: baselines/checkpoints/monodetr
 # Cost: fp32 is slower per step. Benefit: steps actually apply.
 # Set back to true to re-enable once the depth loss is reformulated.
 amp: false
+
+# --- training data ------------------------------------------------------------
+# Train on CLEAR only; evaluate on all 10 via configs/monodetr_eval.yaml.
+#
+# This is the single biggest cost lever. Without it the index's 10 weather
+# renderings are all training data: ~32k batches/epoch, ~2-3 h/epoch in fp32,
+# i.e. 60-90 h for 30 epochs. The 10 variants are pixel-wise different but
+# GEOMETRICALLY IDENTICAL -- same boxes, same depths, same yaws -- so they
+# multiply compute without adding information the detector can learn from.
+# Clear-only is ~3.2k batches/epoch, ~15-20 min/epoch, ~8-10 h for the run.
+#
+# It also fixes the experiment: weather is the TEST axis. Training on every
+# variant means there is no held-out weather to degrade on, so "fog costs us X"
+# becomes unanswerable. And it matches box3d, making A-vs-B a like-for-like
+# comparison on identical training data.
+#
+# Note this revises the step budget in the `epochs` comment below: clear-only is
+# ~97k optimizer steps over 30 epochs, ~2x the KITTI reference rather than 20x.
+train_weathers: [clear]
+
+# --- validation cadence ------------------------------------------------------
+# A full val pass is ~8k batches in fp32 and previously ran after EVERY epoch,
+# which can cost as much as the training. Validate every 3rd epoch on a 500-batch
+# subsample; the FINAL epoch always sees the whole split, so best.pt is never
+# selected on a partial metric.
+eval_every: 3
+eval_max_batches: 500
