@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from pathlib import Path
 
@@ -89,7 +90,22 @@ def split_by_group(dataset, groups, val_fraction: float, seed: int):
 
     train_idx.sort()
     val_idx.sort()
+
+    # Fingerprint the GROUP SET, not the sample count. The split is derived by
+    # shuffling sorted(keys), so if training and evaluation are run over indexes
+    # whose segment sets differ by even one segment, the shuffle diverges and
+    # the "held-out" set silently fills with segments the model trained on.
+    # Measured: dropping a single segment from an 800-segment index moved 82 of
+    # 160 val segments into that category. The counts look normal either way --
+    # this hash is the only thing that catches it, so grep it in both logs.
+    fp = hashlib.sha1("|".join(keys).encode()).hexdigest()[:12]
+    val_fp = hashlib.sha1(
+        "|".join(sorted({groups[i] for i in val_idx})).encode()
+    ).hexdigest()[:12]
     print(f"Group split: {len(keys)} groups -> "
           f"{len(train_idx)} train / {len(val_idx)} val samples "
           f"({len(val_idx) / len(dataset):.1%} val)")
+    print(f"Group split fingerprint: groups={fp} val={val_fp} "
+          f"({len(set(groups[i] for i in val_idx))} val groups) — "
+          "must match between the training run and the final eval")
     return Subset(dataset, train_idx), Subset(dataset, val_idx)

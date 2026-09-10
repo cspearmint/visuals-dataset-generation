@@ -587,11 +587,32 @@ def train(model, cfg, device, resume=None):
         print(f"  --> latest.pt saved (epoch {epoch}, pre-validation)", flush=True)
         print(f"  memory: {_memory_report()}", flush=True)
 
-        # Announce the validation pass: it is long and silent, and its silence
-        # has already been mistaken for a hang.
-        print(f"  validating ({len(val_loader)} batches)...", flush=True)
+        # Validation cadence. A full pass over MonoDETR's val split is ~8k
+        # batches in fp32; running it after every epoch can cost as much as the
+        # training itself. eval_every runs it on a subset of epochs (always
+        # including the last), and eval_max_batches caps how much of val each
+        # pass sees. Both default to the old behaviour: every epoch, all of it.
+        eval_every = cfg.get("eval_every", 1)
+        is_last = epoch == cfg["epochs"]
+        if not (is_last or epoch % eval_every == 0):
+            print(f"  skipping validation (eval_every={eval_every}); "
+                  "latest.pt already saved", flush=True)
+            continue
+
+        eval_loader = val_loader
+        cap = cfg.get("eval_max_batches")
+        if cap and cap < len(val_loader) and not is_last:
+            # Subsample for the periodic passes only -- the FINAL epoch always
+            # sees the whole split, so best.pt is never selected on a partial
+            # metric at the end of the run.
+            eval_loader = _capped_loader(val_loader, cap)
+            print(f"  validating ({cap} of {len(val_loader)} batches, capped)...",
+                  flush=True)
+        else:
+            print(f"  validating ({len(eval_loader)} batches)...", flush=True)
+
         t0 = time.time()
-        metrics = model.evaluate(val_loader, device)
+        metrics = model.evaluate(eval_loader, device)
         val_secs = time.time() - t0
 
         monitor = metrics["monitor"]
@@ -617,6 +638,28 @@ def train(model, cfg, device, resume=None):
         # Refresh latest.pt with the metrics now that validation has run.
         _snapshot(epoch, completed_epoch=epoch, train_loss=train_loss,
                   metrics=metrics, monitor=monitor)
+
+
+
+class _CappedLoader:
+    """Yield at most `n` batches from a DataLoader, preserving len()."""
+
+    def __init__(self, loader, n):
+        self._loader = loader
+        self._n = min(n, len(loader))
+
+    def __len__(self):
+        return self._n
+
+    def __iter__(self):
+        for i, batch in enumerate(self._loader):
+            if i >= self._n:
+                break
+            yield batch
+
+
+def _capped_loader(loader, n):
+    return _CappedLoader(loader, n)
 
 
 def _run_train_epoch(model, loader, optimizer, scaler, device, epoch, total_epochs,
