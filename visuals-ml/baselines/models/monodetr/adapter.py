@@ -19,7 +19,9 @@ import torch
 from baselines.core.interface import BaselineModel
 from baselines.core.metrics import CenterErrorMetric, Sample
 from baselines.core.registry import register_model
-from baselines.core.utils import split_by_group, split_dataset
+from baselines.core.utils import (
+    split_by_group, split_dataset, subsample_frames,
+)
 from baselines.data._vendor_path import ensure_vendor_on_path
 from baselines.data.detection_dataset import (
     DetectionDataset, MAX_OBJS, compute_mean_size, load_records,
@@ -72,6 +74,9 @@ class MonoDETRBaseline(BaselineModel):
             keep = set(train_weathers)
             records = [r for r in records if r.get("weather") in keep]
             print(f"Filtered to weathers {sorted(keep)}: {len(records)} records")
+        # See box3d_net.build_datasets: all 10 weathers stay on both sides of the
+        # split; compute is cut by thinning frames, not weather variants.
+        records = subsample_frames(records, cfg.get("frame_stride", 1))
 
         mean = compute_mean_size(records)
         self.mean_size.copy_(torch.from_numpy(mean))

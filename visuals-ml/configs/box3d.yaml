@@ -1,37 +1,40 @@
 # Baseline B — amodal 3D box regression (centre + dimensions + yaw) from a
 # given 2D box. Shares MonoDETR's per-image index, so B and A are scored against
-# identical labels.
+# identical labels on an identical split.
 #
-#   python -m baselines.data.build_detection_index --cameras 1 --frame-stride 5
-#   python -m baselines.train --config configs/box3d.yaml
-#   python -m baselines.eval  --config configs/box3d.yaml
+#   sbatch --account=$GROUP --qos=$GROUP hipergator/train_box3d.sbatch
+#
+# The SAME config is used for training and for the final evaluation, so the
+# train/val split cannot diverge between them.
 model: box3d
 
 index_file: data/output/det_records.jsonl
 
 batch_size: 32
-num_workers: 6
+num_workers: 7
 val_split: 0.2
 seed: 42
 
-# Train on clear only; evaluate on all 10. The variants are pixel-wise different
-# but geometrically identical, so training on all of them multiplies compute
-# without adding geometric information — and weather is the TEST axis here, not
-# a source of augmentation. Set to null to train on every weather in the index.
-train_weathers: [clear]
+# Segment-level split. Held-out segments are entirely different drives, so no
+# image, and no temporal neighbour of one, appears on both sides.
+group_by: segment
 
-# Quality filters. min_pts > 0 drops boxes with no LiDAR returns (fully occluded
-# or interpolated), whose 3D labels are not trustworthy. Default 0 = keep all.
+# ALL 10 weather variants on BOTH sides. A training segment contributes every
+# one of its renderings; the held-out segments are scored across every rendering
+# too. This mirrors the data the visuals agent will be trained on. Leave unset.
+# (Setting it to e.g. [clear] is a LATER experiment, not the default.)
+train_weathers: null
+
+# The compute knob. Frames are ~10 Hz so neighbours are near-duplicates; thinning
+# them costs little information, unlike dropping weather variants. 1 = keep all.
+#   stride 1 -> ~930k objects/epoch  (~26 h for 30 epochs)
+#   stride 4 -> ~233k objects/epoch  (~6.5 h for 30 epochs)
+frame_stride: 4
+
 min_box_px: 0
 min_pts: 0
-# Drop objects whose 2D box is clipped by the frame border. Their box centre no
-# longer matches the projected 3D centre (measured: ~86% of whole objects have
-# the projected centre inside the box vs ~48-61% of truncated ones), so they
-# teach a corrupted mapping. Set false only to measure the effect.
 drop_truncated: true
 
-# Loss weights over the encoded target. Depth is the hard part of monocular 3D,
-# so it gets 2x rather than being averaged away against 5 easier parameters.
 huber_beta: 0.1
 w_center: 1.0
 w_depth: 2.0

@@ -7,13 +7,14 @@
 #
 # Runs:
 #   1. baselines.data.build_detection_index  (skipped if the index exists)
-#   2. baselines.train  --config configs/box3d.yaml        (trains on CLEAR only)
-#   3. baselines.eval   --config configs/box3d_eval.yaml   (scores ALL 10 weathers)
+#   2. baselines.train --config configs/box3d.yaml
+#   3. baselines.eval  --config configs/box3d.yaml  (--report)
 #
-# box3d trains on clear and is evaluated on every weather variant: the 10
-# renderings share identical geometry, so training on all of them multiplies
-# compute without adding information, and weather is what we are measuring.
-# That is why train and eval use DIFFERENT configs -- do not "fix" this.
+# Split: by SEGMENT, with ALL 10 weather variants on both sides. A training
+# segment contributes every one of its renderings; the held-out segments are
+# entirely different drives, scored across every rendering. This mirrors the
+# data the visuals agent will be trained on. Compute is cut with frame_stride
+# (~10 Hz near-duplicates), never by dropping weathers.
 #
 # Usage:
 #   export GROUP=<your-group> HPG_USER=$USER
@@ -45,7 +46,7 @@ REPO_ROOT=${REPO_ROOT:-/blue/${GROUP}/${HPG_USER}/visuals-dataset-generation}
 DATASET_OUTPUT=${DATASET_OUTPUT:-/blue/${GROUP}/${HPG_USER}/waymo/output}
 SIF=${SIF:-/blue/${GROUP}/${HPG_USER}/waymo/train.sif}
 CONFIG=${CONFIG:-configs/box3d.yaml}
-EVAL_CONFIG=${EVAL_CONFIG:-configs/box3d_eval.yaml}
+EVAL_CONFIG=${EVAL_CONFIG:-configs/box3d.yaml}
 CAMERAS=${CAMERAS:-1}
 # -----------------------------------------------------------------------------
 

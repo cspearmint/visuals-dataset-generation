@@ -109,3 +109,36 @@ def split_by_group(dataset, groups, val_fraction: float, seed: int):
           f"({len(set(groups[i] for i in val_idx))} val groups) — "
           "must match between the training run and the final eval")
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
+
+
+def subsample_frames(records, stride: int):
+    """Keep every Nth FRAME within each (segment, camera), with ALL of its
+    weather variants.
+
+    The right knob for cutting compute on this dataset. Frames arrive at ~10 Hz,
+    so neighbours are near-duplicates and dropping them costs little. The 10
+    weather renderings of a kept frame are all retained: they are the axis the
+    experiment is about, and the downstream visuals agent trains on all of them,
+    so the baselines must too.
+
+    Decimation is per (segment, camera) and ordered by frame stem, so it is a
+    genuine temporal thinning rather than an arbitrary slice of the file order.
+    """
+    if not stride or stride <= 1:
+        return records
+
+    by_group = {}
+    for r in records:
+        by_group.setdefault((r.get("segment"), r.get("camera")), set()).add(r.get("stem"))
+
+    keep = set()
+    for (seg, cam), stems in by_group.items():
+        for stem in sorted(stems)[::stride]:
+            keep.add((seg, cam, stem))
+
+    out = [r for r in records
+           if (r.get("segment"), r.get("camera"), r.get("stem")) in keep]
+    n_frames = len(keep)
+    print(f"Frame stride {stride}: {len(records)} -> {len(out)} records "
+          f"({n_frames} frames x all weathers)")
+    return out

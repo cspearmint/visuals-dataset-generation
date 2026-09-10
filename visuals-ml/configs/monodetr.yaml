@@ -7,7 +7,7 @@ resolution: [960, 640]   # network input W x H (preserves Waymo 1.5 aspect)
 score_thresh: 0.2
 
 batch_size: 8
-num_workers: 4
+num_workers: 7      # cpus-per-task is 8 in the sbatch
 val_split: 0.2
 seed: 42
 
@@ -62,3 +62,24 @@ checkpoint_dir: baselines/checkpoints/monodetr
 # Cost: fp32 is slower per step. Benefit: steps actually apply.
 # Set back to true to re-enable once the depth loss is reformulated.
 amp: false
+
+# --- training data ------------------------------------------------------------
+# ALL 10 weather variants on BOTH sides of the split, matching the data the
+# visuals agent will be trained on. A training segment contributes every one of
+# its renderings; the held-out segments -- entirely different images -- are
+# scored across every rendering. Leave unset; restricting it is a LATER
+# experiment, not the default.
+train_weathers: null
+
+# The compute knob: thin FRAMES (~10 Hz near-duplicates), never weathers.
+#   stride 1 -> ~32k batches/epoch  (~2-3 h/epoch, 60-90 h for 30 epochs)
+#   stride 4 -> ~8k  batches/epoch  (~38 min/epoch, ~19 h for 30 epochs)
+frame_stride: 4
+
+# --- validation cadence ------------------------------------------------------
+# A full val pass is ~8k batches in fp32 and previously ran after EVERY epoch,
+# which can cost as much as the training. Validate every 3rd epoch on a 500-batch
+# subsample; the FINAL epoch always sees the whole split, so best.pt is never
+# selected on a partial metric.
+eval_every: 3
+eval_max_batches: 500
