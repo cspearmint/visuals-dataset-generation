@@ -64,23 +64,17 @@ checkpoint_dir: baselines/checkpoints/monodetr
 amp: false
 
 # --- training data ------------------------------------------------------------
-# Train on CLEAR only; evaluate on all 10 via configs/monodetr_eval.yaml.
-#
-# This is the single biggest cost lever. Without it the index's 10 weather
-# renderings are all training data: ~32k batches/epoch, ~2-3 h/epoch in fp32,
-# i.e. 60-90 h for 30 epochs. The 10 variants are pixel-wise different but
-# GEOMETRICALLY IDENTICAL -- same boxes, same depths, same yaws -- so they
-# multiply compute without adding information the detector can learn from.
-# Clear-only is ~3.2k batches/epoch, ~15-20 min/epoch, ~8-10 h for the run.
-#
-# It also fixes the experiment: weather is the TEST axis. Training on every
-# variant means there is no held-out weather to degrade on, so "fog costs us X"
-# becomes unanswerable. And it matches box3d, making A-vs-B a like-for-like
-# comparison on identical training data.
-#
-# Note this revises the step budget in the `epochs` comment below: clear-only is
-# ~97k optimizer steps over 30 epochs, ~2x the KITTI reference rather than 20x.
-train_weathers: [clear]
+# ALL 10 weather variants on BOTH sides of the split, matching the data the
+# visuals agent will be trained on. A training segment contributes every one of
+# its renderings; the held-out segments -- entirely different images -- are
+# scored across every rendering. Leave unset; restricting it is a LATER
+# experiment, not the default.
+train_weathers: null
+
+# The compute knob: thin FRAMES (~10 Hz near-duplicates), never weathers.
+#   stride 1 -> ~32k batches/epoch  (~2-3 h/epoch, 60-90 h for 30 epochs)
+#   stride 4 -> ~8k  batches/epoch  (~38 min/epoch, ~19 h for 30 epochs)
+frame_stride: 4
 
 # --- validation cadence ------------------------------------------------------
 # A full val pass is ~8k batches in fp32 and previously ran after EVERY epoch,

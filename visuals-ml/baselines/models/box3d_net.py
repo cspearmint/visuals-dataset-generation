@@ -28,7 +28,7 @@ from torchvision.models import resnet18, ResNet18_Weights
 from baselines.core.interface import BaselineModel
 from baselines.core.iou3d import iou_3d
 from baselines.core.registry import register_model
-from baselines.core.utils import split_by_group
+from baselines.core.utils import split_by_group, subsample_frames
 from baselines.data.box3d_dataset import (
     Box3DDataset, compute_dim_anchor, decode_targets, load_records,
 )
@@ -122,11 +122,20 @@ class Box3DBaseline(BaselineModel):
     # MonoDETR's adapter uses for mean_size.
     def build_datasets(self, cfg: dict):
         records = load_records(cfg["index_file"])
+        # ALL 10 weather variants are kept on BOTH sides of the split. The
+        # downstream visuals agent trains on the whole weather-augmented set, so
+        # the baselines must match it: a training segment contributes every one
+        # of its renderings, and the held-out segments -- entirely different
+        # images -- are scored across every rendering too. train_weathers still
+        # exists for later experiments but is deliberately unset by default.
         train_weathers = cfg.get("train_weathers")
         if train_weathers:
             keep = set(train_weathers)
             records = [r for r in records if r.get("weather") in keep]
             print(f"Filtered to weathers {sorted(keep)}: {len(records)} image records")
+        # Compute is cut by thinning FRAMES (~10 Hz near-duplicates), never
+        # weathers.
+        records = subsample_frames(records, cfg.get("frame_stride", 1))
 
         anchor = cfg.get("dim_anchor") or compute_dim_anchor(records)
         anchor = np.asarray(anchor, dtype=np.float32)

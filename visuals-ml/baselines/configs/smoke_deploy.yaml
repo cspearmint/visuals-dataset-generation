@@ -32,7 +32,9 @@ models:
     index_file: data/output/det_records.jsonl
     batch_size: 8
     lr: 5.0e-4
-    train_weathers: [clear]
+    # Mirror the real run: all 10 weathers, compute cut by frame_stride.
+    train_weathers: null
+    frame_stride: 4
     drop_truncated: true
     depth_prior: 25.0
     w_center: 1.0
@@ -52,7 +54,8 @@ models:
     clip_max_norm: 0.1
     resolution: [960, 640]
     score_thresh: 0.2
-    train_weathers: [clear]
+    train_weathers: null
+    frame_stride: 4
     full_run_samples: 32000
     full_run_epochs: 60
 
